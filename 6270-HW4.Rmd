@@ -1,0 +1,520 @@
+---
+title: "VTPEH 6270 - Check Point 04"
+subtitle: "Data Set Selection & R markdown Report Outline"
+author: "Xibiao Wang"
+date: "`r Sys.Date()`"
+editor_options:
+  chunk_output_type: console
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 1
+    number_sections: true
+    latex_engine: xelatex
+urlcolor: blue
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+```
+
+# Objective and Approach
+
+## Specific Objective
+
+Among adults in the 2023 New York State BRFSS, is meeting the aerobic physical activity recommendation (≥150 minutes/week; \_PAINDX3) associated with a lower prevalence of self-reported hypertension (\_RFHYPE6)?
+
+```{r import-data}
+
+library(readr)
+
+df <- read_csv("/Users/wangxibiao/Desktop/NYSDOH_BRFSS_2023/NYSDOH_BRFSS_SurveyData_2023.csv",
+               show_col_types = FALSE)
+
+
+library(dplyr)
+library(stringr)
+
+df_clean <- df %>%
+  select(`_PAINDX3`, `_RFHYPE6`) %>%
+  mutate(
+    PA_raw   = str_trim(as.character(`_PAINDX3`)),
+    HYPE_raw = str_trim(as.character(`_RFHYPE6`))
+  ) %>%
+  mutate(
+    meets_PA = case_when(
+      PA_raw == "Meet Aerobic Recommendations" ~ 1,
+      PA_raw == "Did Not Meet Aerobic Recommendations" ~ 0,
+      TRUE ~ NA_real_   # includes Don't know/Not sure/Refused/Missing
+    ),
+    hypertension = case_when(
+      HYPE_raw == "Yes" ~ 1,
+      HYPE_raw == "No" ~ 0,
+      TRUE ~ NA_real_   # includes Don't know/Not sure/Refused/Missing
+    )
+  ) %>%
+  filter(!is.na(meets_PA), !is.na(hypertension))
+
+
+nrow(df_clean)
+table(df_clean$meets_PA, useNA = "ifany")
+table(df_clean$hypertension, useNA = "ifany")
+
+```
+
+## 2.2 Data Description
+
+```{r clean-variables-fixed}
+library(tibble)
+library(knitr)
+
+data_desc <- tibble(
+  Variable_Name = c("_PAINDX3", "_RFHYPE6", "meets_PA", "hypertension"),
+  Variable_Type_in_Dataset = c(
+    "Categorical (binary; derived BRFSS indicator: meets vs does not meet aerobic recommendations)",
+    "Categorical (binary; derived BRFSS indicator: self-reported hypertension yes/no)",
+    "Binary (derived exposure: 1=meets PA recommendation, 0=does not meet)",
+    "Binary (derived outcome: 1=hypertension yes, 0=no)"
+  ),
+  Variable_Class_in_R = c(
+    class(df$`_PAINDX3`)[1],
+    class(df$`_RFHYPE6`)[1],
+    class(df_clean$meets_PA)[1],
+    class(df_clean$hypertension)[1]
+  )
+)
+
+kable(data_desc, caption = "Data description for key variables (A and B) and derived analysis variables.")
+
+
+```
+
+# Data Visualization
+
+
+## Figure 1
+
+```{r viz-prevalence-bar}
+library(dplyr)
+library(ggplot2)
+
+prev_df <- df_clean %>%
+  group_by(meets_PA) %>%
+  summarise(
+    n = n(),
+    prev_htn = mean(hypertension) * 100,
+    .groups = "drop"
+  )
+
+ggplot(prev_df, aes(x = factor(meets_PA), y = prev_htn)) +
+  geom_col(width = 0.6) +
+  scale_x_discrete(labels = c("Did Not Meet PA", "Met PA")) +
+  labs(
+    x = "Aerobic Physical Activity Status",
+    y = "Hypertension Prevalence (%)",
+    title = "Hypertension Prevalence by Aerobic Physical Activity Status"
+  )
+
+
+```
+
+
+## Figure 2
+
+```{r viz-prevalence-ci}
+ci_df <- df_clean %>%
+  group_by(meets_PA) %>%
+  summarise(
+    n = n(),
+    p = mean(hypertension),
+    se = sqrt(p * (1 - p) / n),
+    prev = p * 100,
+    ci_low = (p - 1.96 * se) * 100,
+    ci_high = (p + 1.96 * se) * 100,
+    .groups = "drop"
+  )
+
+ggplot(ci_df, aes(x = factor(meets_PA), y = prev)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0.15) +
+  scale_x_discrete(labels = c("Did Not Meet PA", "Met PA")) +
+  labs(
+    x = "Aerobic Physical Activity Status",
+    y = "Hypertension Prevalence (%) with 95% CI",
+    title = "Hypertension Prevalence by Aerobic Physical Activity Status (95% CI)"
+  )
+
+
+```
+Figure 1 compares the prevalence of self-reported hypertension between adults who did not meet the aerobic physical activity recommendation and those who met it. Hypertension prevalence is higher among respondents who did not meet the recommendation (approximately 39%) than among those who met it (approximately 33%). Figure 2 adds 95% confidence intervals, which show that the difference in prevalence is sizeable and the uncertainty around each estimate is relatively small given the large sample size.
+
+
+## Description of Plausible Relationships
+
+Based on the plots, meeting the aerobic physical activity recommendation is plausibly associated with a lower prevalence of self-reported hypertension. In probability terms, the visual pattern is consistent with an inverse association:
+P(\text{Hypertension}=1 \mid \text{meets\_PA}=1) < P(\text{Hypertension}=1 \mid \text{meets\_PA}=0).
+The observed difference is on the order of about 6 percentage points (roughly 33% vs 39%), suggesting a meaningful descriptive association. This relationship is biologically plausible because regular aerobic activity can improve vascular function and cardiometabolic regulation, which may lower blood pressure and reduce the likelihood of hypertension.
+
+##  Parameters of Interest
+
+```{r parameters-of-interest}
+library(dplyr)
+library(tibble)
+library(knitr)
+
+
+p0 <- df_clean %>% filter(meets_PA == 0) %>% summarise(p = mean(hypertension)) %>% pull(p)
+p1 <- df_clean %>% filter(meets_PA == 1) %>% summarise(p = mean(hypertension)) %>% pull(p)
+
+
+RD <- p1 - p0
+RR <- p1 / p0
+OR <- (p1 / (1 - p1)) / (p0 / (1 - p0))
+
+
+var0 <- p0 * (1 - p0)
+var1 <- p1 * (1 - p1)
+
+params_tbl <- tibble(
+  Parameter = c(
+    "Hypertension prevalence in PA non-met group",
+    "Hypertension prevalence in PA met group",
+    "Risk difference (met − non-met)",
+    "Risk ratio (met / non-met)",
+    "Odds ratio (met vs non-met)",
+    "Noise/variability in non-met group",
+    "Noise/variability in met group"
+  ),
+  Symbol = c("p0", "p1", "RD", "RR", "OR", "Var0", "Var1"),
+  Description = c(
+    sprintf("P(HTN=1 | meets_PA=0) = %.3f", p0),
+    sprintf("P(HTN=1 | meets_PA=1) = %.3f", p1),
+    sprintf("RD = p1 − p0 = %.3f (absolute difference in probability)", RD),
+    sprintf("RR = p1 / p0 = %.3f", RR),
+    sprintf("OR = [p1/(1−p1)] / [p0/(1−p0)] = %.3f", OR),
+    sprintf("Var(Y|meets_PA=0) = p0(1−p0) = %.3f", var0),
+    sprintf("Var(Y|meets_PA=1) = p1(1−p1) = %.3f", var1)
+  )
+)
+
+kable(params_tbl, caption = "Parameters of interest for the association between aerobic PA status and hypertension.")
+
+
+```
+Table 1 summarizes the key parameters linking aerobic physical activity status (A) to hypertension (B). The group-specific hypertension prevalences are p_0 = P(\text{HTN}=1 \mid \text{meets\_PA}=0)=0.391 and p_1 = P(\text{HTN}=1 \mid \text{meets\_PA}=1)=0.329. The primary effect size in this descriptive comparison is the risk difference RD = p_1 - p_0 = -0.062, indicating a 6.2 percentage-point lower hypertension prevalence among respondents who meet the aerobic recommendation. Equivalent effect-size summaries include the risk ratio RR = 0.842 and odds ratio OR = 0.765, both suggesting lower hypertension prevalence in the “met PA” group. To support later simulation, within-group stochastic variability can be represented using the Bernoulli/Binomial variance p(1-p), which equals 0.238 for the non-met group and 0.221 for the met group.
+
+# Simulation
+
+##  Simulation Basis
+
+```{r sim-basis}
+library(dplyr)
+
+set.seed(123)
+
+
+p0_obs <- 0.391                 # P(HTN=1 | meets_PA=0)
+prob_met_obs <- 8936 / 14634    # P(meets_PA=1) from your cleaned data
+OR_obs <- 0.765                 # observed OR (met vs non-met)
+
+
+p1_from_or <- function(p0, OR){
+  odds0 <- p0 / (1 - p0)
+  odds1 <- OR * odds0
+  p1 <- odds1 / (1 + odds1)
+  return(p1)
+}
+
+
+nn <- 1000
+OR <- OR_obs
+noise_flip <- 0.05
+
+p1 <- p1_from_or(p0_obs, OR)
+
+sim_data <- data.frame(
+  meets_PA = rbinom(nn, size = 1, prob = prob_met_obs)
+) %>%
+  mutate(
+    hypertension = rbinom(
+      n = nn,
+      size = 1,
+      prob = ifelse(meets_PA == 1, p1, p0_obs)
+    )
+  ) %>%
+  mutate(
+  
+    flip = rbinom(nn, 1, noise_flip),
+    hypertension = ifelse(flip == 1, 1 - hypertension, hypertension)
+  ) %>%
+  select(meets_PA, hypertension)
+
+head(sim_data)
+
+
+```
+
+To simulate data consistent with the relationship identified in Section 2, I generated a binary exposure A=\text{meets\_PA} and a binary outcome B=\text{hypertension}. First, A was sampled from a Bernoulli distribution with probability equal to the observed proportion meeting the aerobic recommendation. Then, B\mid A was sampled from a Bernoulli distribution with group-specific hypertension probabilities, where the effect size was controlled through an odds ratio (OR) that determines p_1 given p_0. Finally, I incorporated noise by randomly flipping the binary outcome with probability noise_flip, representing measurement error or unexplained variability.
+
+
+## Simulation Output
+
+```{r sim-output}
+library(dplyr)
+
+
+sim_data <- sim_data %>%
+  mutate(
+    meets_PA = as.integer(meets_PA),
+    hypertension = as.integer(hypertension)
+  )
+
+
+df_stats <- sim_data %>%
+  group_by(meets_PA) %>%
+  summarise(
+    n = n(),
+    p_hat = mean(hypertension),
+    .groups = "drop"
+  )
+
+df_stats
+
+
+p0_hat <- df_stats$p_hat[df_stats$meets_PA == 0]
+p1_hat <- df_stats$p_hat[df_stats$meets_PA == 1]
+
+RD_hat <- p1_hat - p0_hat
+RR_hat <- p1_hat / p0_hat
+OR_hat <- (p1_hat / (1 - p1_hat)) / (p0_hat / (1 - p0_hat))
+
+
+tab <- table(sim_data$meets_PA, sim_data$hypertension)
+chi_p <- suppressWarnings(chisq.test(tab)$p.value)
+
+df_summary <- data.frame(
+  n = nrow(sim_data),
+  p0 = p0_hat,
+  p1 = p1_hat,
+  RD = RD_hat,
+  RR = RR_hat,
+  OR = OR_hat,
+  chi_sq_p = chi_p
+)
+
+df_summary
+
+
+```
+
+The simulation output includes two summary tables. First, the stratified summary table reports the group-specific sample sizes and hypertension prevalences by aerobic physical activity status. In this simulated dataset (n = 1000), the prevalence of hypertension was approximately 0.380 in the “did not meet PA” group and 0.327 in the “met PA” group, reflecting the intended inverse association. Second, the effect-size summary table aggregates the key parameters linking A to B, including the estimated risk difference (RD ≈ −0.053), risk ratio (RR ≈ 0.860), and odds ratio (OR ≈ 0.792). A chi-square test comparing hypertension occurrence across PA groups produced a p-value of approximately 0.099 in this run, illustrating how statistical significance can vary across repeated samples even when the underlying effect size is fixed.
+
+## Simulation Function
+
+```{r sim-helper}
+p1_from_or <- function(p0, OR){
+  odds0 <- p0 / (1 - p0)
+  odds1 <- OR * odds0
+  p1 <- odds1 / (1 + odds1)
+  return(p1)
+}
+
+library(dplyr)
+
+f_sim_htn <- function(
+  nn,        
+  OR,         
+  noise_flip,
+  p0 = 0.391,                 
+  prob_met = 8936/14634,      
+  seed = NULL                 
+){
+  if (!is.null(seed)) set.seed(seed)
+  
+  
+  p1 <- p1_from_or(p0, OR)
+  
+
+  sim_data <- data.frame(
+    meets_PA = rbinom(nn, 1, prob_met)
+  ) %>%
+    mutate(
+
+      hypertension = rbinom(nn, 1, ifelse(meets_PA == 1, p1, p0)),
+
+      flip = rbinom(nn, 1, noise_flip),
+      hypertension = ifelse(flip == 1, 1 - hypertension, hypertension)
+    ) %>%
+    transmute(
+      meets_PA = as.integer(meets_PA),
+      hypertension = as.integer(hypertension)
+    )
+  
+
+  tbl_df <- sim_data %>%
+    group_by(meets_PA) %>%
+    summarise(
+      n = n(),
+      p_hat = mean(hypertension),
+      .groups = "drop"
+    )
+  
+  
+  p0_hat <- tbl_df$p_hat[tbl_df$meets_PA == 0]
+  p1_hat <- tbl_df$p_hat[tbl_df$meets_PA == 1]
+  
+  RD_hat <- p1_hat - p0_hat
+  RR_hat <- p1_hat / p0_hat
+  OR_hat <- (p1_hat/(1 - p1_hat)) / (p0_hat/(1 - p0_hat))
+  
+  tab <- table(sim_data$meets_PA, sim_data$hypertension)
+  chi_p <- suppressWarnings(chisq.test(tab)$p.value)
+  
+  summary_df <- data.frame(
+    n = nn,
+    p0 = p0_hat,
+    p1 = p1_hat,
+    RD = RD_hat,
+    RR = RR_hat,
+    OR = OR_hat,
+    chi_sq_p = chi_p
+  )
+  
+  return(list(data = sim_data, tbl_df = tbl_df, summary_df = summary_df))
+}
+
+
+out <- f_sim_htn(nn = 1000, OR = 0.765, noise_flip = 0.05, seed = 123)
+head(out$data)
+out$tbl_df
+out$summary_df
+
+```
+
+I wrapped the simulation script into a function that takes key parameters—sample size (nn), effect size (OR), and noise level (noise_flip)—and returns both the simulated dataset and the corresponding summary outputs. For each run, the function returns: (1) a simulated data frame (data) containing meets_PA and hypertension, (2) a stratified summary table (tbl_df) with group-specific sample sizes and hypertension prevalences, and (3) an effect-size summary table (summary_df) reporting RD/RR/OR and the chi-square p-value.
+
+## Simulation Automation
+
+```{r sim-automation}
+library(dplyr)
+
+R <- 100
+
+v_OR <- seq(0.50, 1.00, length.out = 10)
+v_n  <- c(200, 500, 1000, 2000, 4000, 8000, 12000, 14634, 20000, 30000)
+v_noise <- c(0.00, 0.05, 0.10)
+
+all_summary <- data.frame()
+run_id <- 1
+
+for (OR_i in v_OR) {
+  for (n_i in v_n) {
+    for (noise_i in v_noise) {
+      for (rep_i in 1:R) {  
+        
+        res <- f_sim_htn(nn = n_i, OR = OR_i, noise_flip = noise_i)
+        
+        all_summary <- rbind(
+          all_summary,
+          cbind(
+            run = run_id,
+            rep = rep_i,     
+            OR_true = OR_i,
+            n_true = n_i,
+            noise = noise_i,
+            res$summary_df
+          )
+        )
+        
+        run_id <- run_id + 1
+      }
+    }
+  }
+}
+
+
+dim(all_summary)
+head(all_summary)
+
+```
+I automated the simulation by evaluating a grid of parameter combinations across effect size, sample size, and noise. Specifically, I considered 10 effect sizes (OR values from 0.50 to 1.00), 10 sample sizes (including 14,634 to match the order of magnitude of the observed BRFSS dataset), and 3 noise levels (0, 0.05, 0.10). To obtain stable power estimates, I repeated each parameter combination R = 100 times, resulting in 10 \times 10 \times 3 \times 100 = 30{,}000 simulation runs. For each run, I stored the key summary outputs (estimated p_0, p_1, RD, RR, OR, and the chi-square p-value) along with the scenario parameters in a master results table (all_summary). This structure enables straightforward aggregation (e.g., computing power as the proportion of runs with p < 0.05) across scenarios.
+
+
+# Visualization
+
+```{r viz-power-heatmap}
+library(dplyr)
+
+
+power_df <- all_summary %>%
+  mutate(sig = chi_sq_p < 0.05) %>%
+  group_by(noise, n_true, OR_true) %>%
+  summarise(
+    power = mean(sig),
+    .groups = "drop"
+  )
+
+
+type1_df <- power_df %>%
+  filter(abs(OR_true - 1) < 1e-8) %>%
+  arrange(noise, n_true)
+
+head(power_df)
+type1_df
+
+library(ggplot2)
+
+ggplot(power_df,
+       aes(x = factor(n_true),
+           y = factor(round(OR_true, 2)),
+           fill = power)) +
+  geom_tile() +
+  facet_wrap(~ noise, nrow = 1) +
+  labs(
+    title = "Power (Pr[p < 0.05]) across effect size, sample size, and noise",
+    x = "Sample size (n)",
+    y = "True OR (effect size)",
+    fill = "Power"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+
+ggplot(power_df,
+       aes(x = n_true,
+           y = power,
+           group = OR_true,
+           linetype = factor(round(OR_true, 2)))) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ noise, nrow = 1) +
+  labs(
+    title = "Power curves by effect size across sample sizes (faceted by noise)",
+    x = "Sample size (n)",
+    y = "Power (Pr[p < 0.05])",
+    linetype = "True OR"
+  ) +
+  theme_classic(base_size = 12)
+
+
+```
+
+Figure 1 (heatmap) summarizes power across the full simulation grid. Power increases as the effect size becomes stronger (OR farther from 1) and as sample size increases, while higher noise levels shift the power surface downward, requiring larger samples to achieve the same power. The faceting by noise makes this pattern easy to compare across measurement-error scenarios.
+
+Figure 2 (power curves) presents the same information in a complementary format, showing power as a function of sample size for different true OR values within each noise level. Curves corresponding to stronger effects rise more quickly toward high power, whereas curves for OR values close to 1 remain near the nominal significance level, indicating low power for weak associations.
+
+# Interpretation
+
+These simulations show that the ability to detect an association between aerobic physical activity status and hypertension depends strongly on effect size, sample size, and noise. As expected, power increases as the true effect becomes stronger (OR farther from 1) and as sample size increases; higher noise shifts the power surface downward, meaning larger samples are needed to achieve the same detection probability. As a validity check, when OR = 1 (no true association), the rejection rate stayed close to the nominal 0.05 level across sample sizes (approximately 0.03–0.09 in 100 replications), indicating appropriate Type I error control. For an effect size close to the observed association in the BRFSS data (OR ≈ 0.78) and a sample size comparable to the observed dataset (n = 14,634), the estimated power was 1.00 across the tested noise levels. Overall, the results highlight that modest associations can be detected reliably with large samples, but measurement error and smaller sample sizes can substantially reduce statistical power.
+
+
+# AI Use Disclosure Statement
+
+Yes, I used an AI-based tool (ChatGPT). I used it to help structure the simulation workflow, draft and refine R code templates for the simulation, visualization, and summary tables, and troubleshoot coding issues. 
