@@ -1,0 +1,358 @@
+---
+title: "Association Between Aerobic Physical Activity and Hypertension in New York State Adults"
+subtitle: "Analysis of the 2023 NYSDOH BRFSS Survey Data"
+author: "Xibiao Wang"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    latex_engine: xelatex
+urlcolor: blue
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 7,
+  fig.height = 4.5,
+  dpi = 300
+)
+
+library(tidyverse)
+library(knitr)
+library(survey)
+library(scales)
+```
+
+# Introduction
+
+## Research question
+
+Among adults in New York State in the 2023 Behavioral Risk Factor Surveillance System (BRFSS), is meeting the aerobic physical activity recommendation associated with lower prevalence of self-reported hypertension?
+
+## Background and scientific rationale
+
+Hypertension is an important modifiable cardiovascular risk factor and is commonly used in public health surveillance to monitor population-level chronic disease risk. Regular aerobic physical activity is biologically plausible as a protective factor because it can improve vascular function, insulin sensitivity, body weight regulation, and overall cardiovascular fitness. Therefore, adults who meet recommended aerobic physical activity levels may have lower hypertension prevalence than adults who do not meet the recommendation.
+
+This report uses the 2023 New York State Department of Health BRFSS survey dataset to examine the association between aerobic physical activity status and self-reported hypertension. The main exposure is the calculated aerobic physical activity index (`_PAINDX3`), and the main outcome is hypertension status (`_RFHYPE6`). Age group (`_AGE65YR`) and sex (`_SEX`) are included as covariates because they are related to both physical activity patterns and hypertension risk.
+
+The practical goal of this analysis is not to prove causality, because BRFSS is cross-sectional, but to describe whether a meaningful association exists in a large population-based surveillance dataset.
+
+# Materials and Methods
+
+## Data source
+
+The analysis uses the 2023 NYSDOH BRFSS Survey Data. BRFSS is a health-related telephone survey that collects information on adult health behaviors, chronic conditions, and preventive health practices. The dataset is publicly available through Health Data NY.
+
+```{r load-data}
+# Download the 2023 NYSDOH BRFSS dataset directly from Health Data NY.
+# This avoids using a local file path and makes the R Markdown file easier to reproduce.
+
+temp <- tempfile()
+
+download.file(
+  "https://health.data.ny.gov/download/tk4g-wdfe/application%2Fx-zip-compressed",
+  temp,
+  mode = "wb"
+)
+
+brfss_raw <- read.csv(
+  unz(temp, "NYSDOH_BRFSS_SurveyData_2023.csv"),
+  encoding = "latin1",
+  check.names = FALSE
+)
+
+unlink(temp)
+
+# Check dataset dimensions
+raw_dimensions <- dim(brfss_raw)
+raw_dimensions
+```
+
+The raw dataset contains `r raw_dimensions[1]` observations and `r raw_dimensions[2]` variables.
+
+## Variables
+
+The analysis focuses on one exposure, one outcome, and two covariates.
+
+| Role | Dataset variable | Description | Coding used in this report |
+|---|---|---|---|
+| Exposure | `_PAINDX3` | Aerobic physical activity index | Meets recommendation vs. does not meet recommendation |
+| Outcome | `_RFHYPE6` | Self-reported hypertension status | Yes vs. No |
+| Covariate | `_AGE65YR` | Age category | Age 18 to 64 vs. age 65 or older |
+| Covariate | `_SEX` | Sex | Male vs. Female |
+| Survey weight | `_LLCPWT` | BRFSS final sampling weight | Used for weighted estimates |
+
+## Data cleaning and analytic sample
+
+Observations were included if they had valid responses for aerobic physical activity, hypertension, age group, sex, and survey weight. Responses such as "Don't know," "Not sure," "Refused," or "Missing" were excluded from the analytic sample. Binary variables were then created to support statistical analysis and interpretation.
+
+```{r clean-data}
+brfss_clean <- brfss_raw %>%
+  select(`_PAINDX3`, `_RFHYPE6`, `_AGE65YR`, `_SEX`, `_LLCPWT`) %>%
+  filter(
+    `_PAINDX3` %in% c("Meet Aerobic Recommendations",
+                      "Did Not Meet Aerobic Recommendations"),
+    `_RFHYPE6` %in% c("Yes", "No"),
+    `_AGE65YR` %in% c("Age 18 to 64", "Age 65 or older"),
+    `_SEX` %in% c("Male", "Female"),
+    !is.na(`_LLCPWT`)
+  ) %>%
+  mutate(
+    hypertension = if_else(`_RFHYPE6` == "Yes", 1, 0),
+    physical_activity = factor(
+      `_PAINDX3`,
+      levels = c("Did Not Meet Aerobic Recommendations", "Meet Aerobic Recommendations"),
+      labels = c("Did not meet recommendation", "Met recommendation")
+    ),
+    meets_PA = if_else(physical_activity == "Met recommendation", 1, 0),
+    age_group = factor(`_AGE65YR`, levels = c("Age 18 to 64", "Age 65 or older")),
+    sex = factor(`_SEX`, levels = c("Female", "Male")),
+    weight = as.numeric(`_LLCPWT`)
+  )
+
+analytic_n <- nrow(brfss_clean)
+analytic_n
+```
+
+After exclusions, the analytic sample included `r analytic_n` adults.
+
+## Statistical approach
+
+First, I described the analytic sample using counts and percentages. Second, I estimated hypertension prevalence by aerobic physical activity status, including 95% confidence intervals. Third, I used a Pearson chi-square test to assess the unadjusted association between physical activity status and hypertension. Finally, I fit a weighted logistic regression model with hypertension as the outcome and physical activity status as the main exposure, adjusting for age group and sex.
+
+Because BRFSS is a survey dataset, the main regression model and weighted descriptive estimates used the final sampling weight (`_LLCPWT`). The analysis reports odds ratios (ORs), 95% confidence intervals, and p-values. Statistical significance is interpreted together with practical significance.
+
+```{r survey-design}
+brfss_design <- svydesign(
+  ids = ~1,
+  weights = ~weight,
+  data = brfss_clean
+)
+```
+
+# Results
+
+## Sample characteristics
+
+```{r sample-characteristics}
+sample_table <- brfss_clean %>%
+  summarise(
+    Total = n(),
+    `Met PA recommendation` = sum(physical_activity == "Met recommendation"),
+    `Did not meet PA recommendation` = sum(physical_activity == "Did not meet recommendation"),
+    `Hypertension yes` = sum(hypertension == 1),
+    `Hypertension no` = sum(hypertension == 0),
+    `Age 65 or older` = sum(age_group == "Age 65 or older"),
+    Male = sum(sex == "Male"),
+    Female = sum(sex == "Female")
+  ) %>%
+  pivot_longer(everything(), names_to = "Characteristic", values_to = "Count") %>%
+  mutate(Percent = Count / analytic_n)
+
+kable(
+  sample_table %>%
+    mutate(Percent = percent(Percent, accuracy = 0.1)),
+  caption = "Unweighted analytic sample characteristics"
+)
+```
+
+The analytic sample includes adults with valid information for physical activity, hypertension, age group, sex, and survey weight. This table is unweighted and describes the number of observations available for the analysis.
+
+## Hypertension prevalence by physical activity status
+
+```{r prevalence-table}
+prev_unweighted <- brfss_clean %>%
+  group_by(physical_activity) %>%
+  summarise(
+    n = n(),
+    hypertension_cases = sum(hypertension),
+    prevalence = mean(hypertension),
+    se = sqrt(prevalence * (1 - prevalence) / n),
+    lower_95 = prevalence - 1.96 * se,
+    upper_95 = prevalence + 1.96 * se,
+    .groups = "drop"
+  )
+
+prev_weighted <- svyby(
+  ~hypertension,
+  ~physical_activity,
+  brfss_design,
+  svymean,
+  vartype = c("se", "ci"),
+  na.rm = TRUE
+) %>%
+  as_tibble() %>%
+  rename(
+    weighted_prevalence = hypertension,
+    weighted_se = se,
+    weighted_lower_95 = ci_l,
+    weighted_upper_95 = ci_u
+  )
+
+prev_table <- prev_unweighted %>%
+  left_join(prev_weighted, by = "physical_activity") %>%
+  mutate(
+    prevalence = percent(prevalence, accuracy = 0.1),
+    lower_95 = percent(lower_95, accuracy = 0.1),
+    upper_95 = percent(upper_95, accuracy = 0.1),
+    weighted_prevalence = percent(weighted_prevalence, accuracy = 0.1),
+    weighted_lower_95 = percent(weighted_lower_95, accuracy = 0.1),
+    weighted_upper_95 = percent(weighted_upper_95, accuracy = 0.1)
+  ) %>%
+  select(
+    `Physical activity status` = physical_activity,
+    n,
+    `Hypertension cases` = hypertension_cases,
+    `Unweighted prevalence` = prevalence,
+    `Unweighted 95% CI lower` = lower_95,
+    `Unweighted 95% CI upper` = upper_95,
+    `Weighted prevalence` = weighted_prevalence,
+    `Weighted 95% CI lower` = weighted_lower_95,
+    `Weighted 95% CI upper` = weighted_upper_95
+  )
+
+kable(prev_table, caption = "Hypertension prevalence by aerobic physical activity status")
+```
+
+Hypertension prevalence was compared between adults who met and did not meet the aerobic physical activity recommendation. The weighted estimates are emphasized because they better represent the New York State adult population than the raw sample counts alone.
+
+```{r extract-prevalence-values, include=FALSE}
+prev_text <- prev_weighted %>%
+  mutate(
+    prevalence_pct = weighted_prevalence * 100,
+    lower_pct = weighted_lower_95 * 100,
+    upper_pct = weighted_upper_95 * 100
+  )
+
+not_met_prev <- prev_text %>% filter(physical_activity == "Did not meet recommendation")
+met_prev <- prev_text %>% filter(physical_activity == "Met recommendation")
+prev_diff <- not_met_prev$prevalence_pct - met_prev$prevalence_pct
+```
+
+The weighted prevalence of hypertension was `r round(not_met_prev$prevalence_pct, 1)`% among adults who did not meet the aerobic recommendation and `r round(met_prev$prevalence_pct, 1)`% among adults who met the recommendation. This corresponds to an absolute difference of approximately `r round(prev_diff, 1)` percentage points.
+
+## Visualization with uncertainty
+
+```{r prevalence-figure}
+plot_data <- prev_weighted %>%
+  mutate(
+    prevalence_pct = weighted_prevalence * 100,
+    lower_pct = weighted_lower_95 * 100,
+    upper_pct = weighted_upper_95 * 100
+  )
+
+ggplot(plot_data, aes(x = physical_activity, y = prevalence_pct)) +
+  geom_col(width = 0.62, fill = "gray70", color = "black") +
+  geom_errorbar(aes(ymin = lower_pct, ymax = upper_pct), width = 0.15) +
+  scale_y_continuous(labels = function(x) paste0(x, "%"), limits = c(0, max(plot_data$upper_pct) + 8)) +
+  labs(
+    title = "Weighted Hypertension Prevalence by Aerobic Physical Activity Status",
+    x = "Aerobic physical activity status",
+    y = "Weighted hypertension prevalence",
+    caption = "Error bars show 95% confidence intervals. Data source: 2023 NYSDOH BRFSS."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 0, hjust = 0.5)
+  )
+```
+
+Figure 1 shows that adults who met the aerobic physical activity recommendation had lower weighted hypertension prevalence than adults who did not meet the recommendation. The graph includes 95% confidence intervals, which makes the uncertainty around each prevalence estimate visible rather than presenting only point estimates.
+
+## Chi-square test
+
+```{r chi-square-test}
+pa_htn_table <- table(brfss_clean$physical_activity, brfss_clean$hypertension)
+chi_result <- chisq.test(pa_htn_table)
+
+pa_htn_table
+chi_result
+```
+
+The Pearson chi-square test evaluates whether hypertension status differs by aerobic physical activity status in the unweighted analytic sample. A statistically significant result suggests that the distribution of hypertension is not the same across the two physical activity groups.
+
+## Weighted logistic regression
+
+```{r logistic-regression}
+weighted_model <- svyglm(
+  hypertension ~ physical_activity + age_group + sex,
+  design = brfss_design,
+  family = quasibinomial()
+)
+
+model_summary <- summary(weighted_model)
+model_summary
+
+or_table <- tibble(
+  term = names(coef(weighted_model)),
+  estimate = coef(weighted_model),
+  conf_low = confint(weighted_model)[, 1],
+  conf_high = confint(weighted_model)[, 2],
+  p_value = coef(model_summary)[, "Pr(>|t|)"]
+) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    OR = exp(estimate),
+    OR_low = exp(conf_low),
+    OR_high = exp(conf_high),
+    `Odds Ratio (95% CI)` = paste0(round(OR, 2), " (", round(OR_low, 2), ", ", round(OR_high, 2), ")"),
+    `p-value` = if_else(p_value < 0.001, "<0.001", as.character(round(p_value, 3)))
+  ) %>%
+  select(
+    Predictor = term,
+    `Odds Ratio (95% CI)`,
+    `p-value`
+  )
+
+kable(or_table, caption = "Weighted logistic regression predicting self-reported hypertension")
+```
+
+```{r extract-model-values, include=FALSE}
+pa_row <- or_table %>% filter(str_detect(Predictor, "physical_activity"))
+age_row <- or_table %>% filter(str_detect(Predictor, "age_group"))
+sex_row <- or_table %>% filter(str_detect(Predictor, "sex"))
+```
+
+After adjustment for age group and sex, meeting the aerobic physical activity recommendation remained associated with lower odds of self-reported hypertension. This suggests that the observed association is not explained only by differences in age or sex composition between the two activity groups.
+
+# Discussion and Interpretation
+
+## Main finding
+
+The results support the research hypothesis. Adults who met the aerobic physical activity recommendation had lower hypertension prevalence than adults who did not meet the recommendation. This pattern was visible in the weighted prevalence estimates, in the bar chart with 95% confidence intervals, and in the adjusted weighted logistic regression model.
+
+## Statistical significance and practical significance
+
+The association was statistically significant, but the practical interpretation is also important. The difference in hypertension prevalence was approximately `r round(prev_diff, 1)` percentage points. At a population level, even a difference of this size may be meaningful because hypertension is common and is related to cardiovascular disease risk. In public health practice, increasing the proportion of adults who meet physical activity recommendations could therefore have population-level benefits.
+
+However, statistical significance does not mean that physical activity alone explains hypertension risk. Age, sex, diet, medication use, body weight, access to care, and other social and behavioral factors may also influence hypertension. The regression model adjusted for age group and sex, but it did not adjust for every possible confounder.
+
+## Limitations
+
+There are several limitations. First, BRFSS is cross-sectional, so temporality cannot be established. It is possible that hypertension status influences physical activity behavior, rather than physical activity only influencing hypertension risk. Second, both physical activity and hypertension are self-reported, which may introduce recall bias or misclassification. Third, this analysis used a simplified survey design with final weights but did not incorporate all possible complex sampling design variables. Fourth, residual confounding may remain because the model adjusted only for age group and sex.
+
+## Conclusion
+
+In the 2023 NYSDOH BRFSS analytic sample, meeting the aerobic physical activity recommendation was associated with lower prevalence and lower adjusted odds of self-reported hypertension among New York State adults. The findings are consistent with public health recommendations promoting regular aerobic activity for cardiovascular health. Because the data are cross-sectional, the results should be interpreted as evidence of association rather than proof of causation.
+
+# Reproducibility and AI Use Disclosure
+
+All data cleaning, visualization, and statistical analyses are shown in this R file. The data were loaded directly from the public Health Data NY download link to improve reproducibility.
+
+AI use disclosure: I used ChatGPT to help organize the R Markdown report, refine R code, and improve the clarity of statistical interpretation.
+
+# References
+
+Cornelissen, V. A., & Smart, N. A. (2013). Exercise training for blood pressure: A systematic review and meta-analysis. *Journal of the American Heart Association*, 2(1), e004473.
+
+Physical Activity Guidelines Advisory Committee. (2018). *Physical Activity Guidelines Advisory Committee Scientific Report*. U.S. Department of Health and Human Services.
+
+Whelton, P. K., Carey, R. M., Aronow, W. S., et al. (2018). 2017 ACC/AHA guideline for the prevention, detection, evaluation, and management of high blood pressure in adults. *Hypertension*, 71(6), e13-e115.
